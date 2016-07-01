@@ -17,6 +17,11 @@ if hasattr(ssl, '_create_unverified_context') and hasattr(ssl, '_create_default_
 
 rsa_mod = 0xAC69F5CCC8BDE47CD3D371603748378C9CFAD2938A6B021E0E191013975AD683F5CBF9ADE8BD7D46B4D2EC2D78AF146F1DD2D50DC51446BB8880B8CE88D476694DFC60594393BEEFAA16F5DBCEBE22F89D640F5336E42F587DC4AFEDEFEAC36CF007009CCCE5C1ACB4FF06FBA69802A8085C2C54BADD0597FC83E6870F1E36FD
 rsa_pubexp = 0x010001
+
+APP_VERSION = "2.0.3.4"
+PROTOCOL_VERSION = 108
+FALLBACK_MAC = '000000000000'
+
 PY3K = sys.version.startswith('3')
 if not PY3K:
     import urllib2
@@ -37,6 +42,7 @@ except ImportError:
     #slow rsa
     print('Warning: pycrypto not found, use pure-python implemention')
     rsa_result = {}
+
     def cached(func):
         def _(s):
             if s in rsa_result:
@@ -46,6 +52,7 @@ except ImportError:
                 rsa_result[s] = _r
             return _r
         return _
+
     # https://github.com/mengskysama/XunLeiCrystalMinesMakeDie/blob/master/run.py
     def modpow(b, e, m):
         result = 1
@@ -69,6 +76,7 @@ except ImportError:
         return "{0:0256X}".format(result) # length should be 1024bit, hard coded here
 else:
     cipher = RSA.construct((rsa_mod, rsa_pubexp))
+
     def rsa_encode(s):
         if PY3K and isinstance(s, str):
             s = s.encode("utf-8")
@@ -96,26 +104,35 @@ header_api = {
     'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 5.0.1; SmallRice Build/LRX22C)'
 }
 
+
 def get_mac(nic = '', to_splt = ':'):
     if os.name == 'nt':
         cmd = 'ipconfig /all'
         splt = '-'
     elif os.name == "posix":
-        cmd = 'ifconfig %s' % (nic or '-a')
+        if os.path.exists('/usr/bin/ip') or os.path.exists('/bin/ip'):
+            if nic:
+                cmd = 'ip link show dev %s' % nic
+            else:
+                # Unfortunately, loopback interface always comes first
+                # So we have to grep it out
+                cmd = 'ip link show up | grep -v loopback'
+        else:
+            cmd = 'ifconfig %s' % (nic or '-a')
         splt = ':'
     else:
-        return ''
+        return FALLBACK_MAC
     try:
         r = os.popen(cmd).read()
         if r:
             _ = re.findall('((?:[0-9A-Fa-f]{2}%s){5}[0-9A-Fa-f]{2})' % splt, r)
             if not _:
-                return ''
+                return FALLBACK_MAC
             else:
                 return _[0].replace(splt, to_splt)
     except:
         pass
-    return '000000000000004V'
+    return FALLBACK_MAC
 
 
 def long2hex(l):
@@ -140,6 +157,7 @@ def uprint(s, fallback = None, end = None):
                 print(fallback, end = end)
         break
 
+
 def http_req(url, headers = {}, body = None, encoding = 'utf-8'):
     req = urllib2.Request(url)
     for k in headers:
@@ -152,19 +170,23 @@ def http_req(url, headers = {}, body = None, encoding = 'utf-8'):
         ret = str(ret)
     return ret
 
+
 def login_xunlei(uname, pwd_md5, login_type = TYPE_NORMAL_ACCOUNT):
     pwd = rsa_encode(pwd_md5)
-    fake_device_id = hashlib.md5("%s23333" % pwd_md5).hexdigest() # just generate a 32bit string
-    # sign = div.10?.md5(sha1(packageName + businessType + md5(a protocolVersion specific GUID)))
-    device_sign = "div100.%s%s" % (fake_device_id, hashlib.md5(hashlib.sha1("%scom.xunlei.vip.swjsq68700d1872b772946a6940e4b51827e8af" % fake_device_id).hexdigest()).hexdigest())
+    fake_device_id = hashlib.md5(("%s23333" % pwd_md5).encode('utf-8')).hexdigest() # just generate a 32bit string
+    # sign = div.10?.device_id + md5(sha1(packageName + businessType + md5(a protocolVersion specific GUID)))
+    device_sign = "div100.%s%s" % (fake_device_id, hashlib.md5(
+        hashlib.sha1(("%scom.xunlei.vip.swjsq68700d1872b772946a6940e4b51827e8af" % fake_device_id).encode('utf-8'))
+            .hexdigest().encode('utf-8')
+     ).hexdigest())
     _payload = json.dumps({
-            "protocolVersion": 108,# 109
-            "sequenceNo": 1000001, # TODO: autoincr when relogin
+            "protocolVersion": PROTOCOL_VERSION,# 109
+            "sequenceNo": 1000001,
             "platformVersion": 1,
             "sdkVersion": 177550,# 177600
             "peerID": MAC,
             "businessType": 68,
-            "clientVersion": "2.0.3.4",# app version
+            "clientVersion": APP_VERSION,
             "devicesign":device_sign,
             "isCompressed": 0,
             "cmdID": 1,
@@ -184,6 +206,24 @@ def login_xunlei(uname, pwd_md5, login_type = TYPE_NORMAL_ACCOUNT):
     ct = http_req('https://login.mobile.reg2t.sandai.net:443/', body = _payload, headers = header_xl, encoding = 'gbk')
     return json.loads(ct), _payload
 
+
+def renew_xunlei(uid, session):
+    _payload = json.dumps({
+        "protocolVersion": 108,
+        "sequenceNo": 1000000,
+        "platformVersion": 1,
+        "peerID": MAC,
+        "businessType": 68,
+        "clientVersion": APP_VERSION,
+        "isCompressed": 0,
+        "cmdID": 11,
+        "userID": uid,
+        "sessionID": session
+    })
+    ct = http_req('https://login.mobile.reg2t.sandai.net:443/', body = _payload, headers = header_xl, encoding = 'gbk')
+    return json.loads(ct), _payload
+
+
 def api_url():
     portal = json.loads(http_req("http://api.portal.swjsq.vip.xunlei.com:81/v2/queryportal"))
     if portal['errno']:
@@ -191,21 +231,29 @@ def api_url():
         os._exit(3)
     return '%s:%s' % (portal['interface_ip'], portal['interface_port'])
 
+
 def setup():
     global MAC
     global API_URL
     MAC = get_mac(to_splt = '').upper() + '004V'
     API_URL = api_url()
 
-def api(cmd, uid, session_id = ''):
-    url = 'http://%s/v2/%s?peerid=%s&userid=%s&user_type=1%s' % (
+
+def api(cmd, uid, session_id = '', extras = ''):
+    # missing dial_account, (userid), os
+    url = 'http://%s/v2/%s?%sclient_type=android-swjsq-%s&peerid=%s&time_and=%d&client_version=androidswjsq-%s&userid=%s&os=android-5.0.1.23SmallRice%s' % (
             API_URL,
             cmd,
+            ('sessionid=%s&' % session_id) if session_id else '',
+            APP_VERSION,
             MAC,
+            time.time() * 1000,
+            APP_VERSION,
             uid,
-            ('&sessionid=%s' % session_id) if session_id else ''
+            ('&%s' % extras) if extras else '',
     )
     return json.loads(http_req(url, headers = header_api))
+
 
 def fast_d1ck(uname, pwd, login_type, save = True):
     if uname[-2] == ':':
@@ -233,16 +281,19 @@ def fast_d1ck(uname, pwd, login_type, save = True):
             pass
         with open(account_file_encrypted, 'w') as f:
             f.write('%s,%s' % (dt['userID'], pwd))
-    _script_mtime = os.stat(os.path.realpath(__file__)).st_mtime
-    if not os.path.exists(shell_file) or os.stat(shell_file).st_mtime < _script_mtime:
-        make_wget_script(dt['userID'], pwd, _payload)
-    if not os.path.exists(ipk_file) or os.stat(ipk_file).st_mtime < _script_mtime:
-        update_ipk()
 
     _ = api('bandwidth', dt['userID'])
     if not _['can_upgrade']:
         uprint('Error: can not upgrade, so sad TAT %s' % _['message'], 'Error: can not upgrade, so sad TAT')
         os._exit(3)
+
+    _dial_account = _['dial_account']
+
+    _script_mtime = os.stat(os.path.realpath(__file__)).st_mtime
+    if not os.path.exists(shell_file) or os.stat(shell_file).st_mtime < _script_mtime:
+        make_wget_script(dt['userID'], pwd, _dial_account, _payload)
+    if not os.path.exists(ipk_file) or os.stat(ipk_file).st_mtime < _script_mtime:
+        update_ipk()
 
     print("To Upgrade: ", end = '')
     uprint('%s%s ' % ( _['province_name'], _['sp_name']),
@@ -260,30 +311,43 @@ def fast_d1ck(uname, pwd, login_type, save = True):
     def _atexit_func():
         print("Sending recover request")
         try:
-            api('recover', dt['userID'], dt['sessionID'])
+            api('recover', dt['userID'], dt['sessionID'], extras = "dial_account=%s" % _dial_account)
         except KeyboardInterrupt:
             print('Secondary ctrl+c pressed, exiting')
     atexit.register(_atexit_func)
     i = 0
     while True:
         try:
-            if i % 6 == 0:#30min
+            # i=1~17 keepalive, renew session, i++
+            # i=18 (3h) re-upgrade, i:=0
+            # i=100 login, i:=36
+            if i == 100:
+                dt, _payload = login_xunlei(uname, pwd, login_type)
+                i = 18
+            if i % 18 == 0:#3h
                 print('Initializing upgrade')
-                if i:
-                    api('recover', dt['userID'], dt['sessionID'])
+                if i:# not first time
+                    api('recover', dt['userID'], dt['sessionID'], extras = "dial_account=%s" % _dial_account)
                     time.sleep(5)
-                    dt, _payload = login_xunlei(uname, pwd, login_type)
-                _ = api('upgrade', dt['userID'], dt['sessionID'])
+                _ = api('upgrade', dt['userID'], dt['sessionID'], extras = "user_type=1&dial_account=%s" % _dial_account)
                 #print(_)
                 if not _['errno']:
                     print('Upgrade done: Down %dM, Up %dM' % (_['bandwidth']['downstream'], _['bandwidth']['upstream']))
+                    i = 0
             else:
+                _dt_t, _paylod_t = renew_xunlei(dt['userID'], dt['sessionID'])
+                if _dt_t['errorCode']:
+                    i = 100
+                    continue
                 _ = api('keepalive', dt['userID'], dt['sessionID'])
             if _['errno']:
-                print('Error: %s' % _['message'])
+                print('Error %s: %s' % (_['errno'], _['message']))
                 if _['errno'] == 513:# TEST: re-upgrade when get 'not exist channel'
-                    i = 0
+                    i = 100
                     continue
+                elif _['errno'] == 812:
+                    print('Already upgraded, continuing')
+                    i = 0
                 else:
                     time.sleep(300)#os._exit(4)
         except Exception as ex:
@@ -295,17 +359,20 @@ def fast_d1ck(uname, pwd, login_type, save = True):
                 f.write('%s %s\n' % (time.strftime('%X', time.localtime(time.time())), _))
             except UnicodeEncodeError:
                 f.write('%s keepalive\n' % (time.strftime('%X', time.localtime(time.time()))))
-        i+=1
-        time.sleep(270)#5 min
+        i += 1
+        time.sleep(590)#10 min
 
-def make_wget_script(uid, pwd, _payload):
-    open(shell_file, 'wb').write(
-'''#!/bin/ash
+
+def make_wget_script(uid, pwd, dial_account, _payload):
+    # i=1~17 keepalive, renew session, i++
+    # i=18 (3h) re-upgrade, i:=0
+    # i=100 login, i:=18
+    with open(shell_file, 'wb') as f:
+        _ = '''#!/bin/ash
 TEST_URL="https://baidu.com"
 UA_XL="User-Agent: swjsq/0.0.1"
 
-if [ ! -z "`wget --no-check-certificate -O - $TEST_URL 2>&1|grep "100%"`" ]
-   then
+if [ ! -z "`wget --no-check-certificate -O - $TEST_URL 2>&1|grep "100%"`" ]; then
    HTTP_REQ="wget -q --no-check-certificate -O - "
    POST_ARG="--post-data="
 else
@@ -326,73 +393,86 @@ portal=`$HTTP_REQ http://api.portal.swjsq.vip.xunlei.com:81/v2/queryportal`
 portal_ip=`echo $portal|grep -oE '([0-9]{1,3}[\.]){3}[0-9]{1,3}'`
 portal_port_temp=`echo $portal|grep -oE "port...[0-9]{1,5}"`
 portal_port=`echo $portal_port_temp|grep -oE '[0-9]{1,5}'`
-if [ -z "$portal_ip" ]
-  then
-	 sleep 30
-	 portal=`$HTTP_REQ http://api.portal.swjsq.vip.xunlei.com:81/v2/queryportal`
-     portal_ip=`echo $portal|grep -oE '([0-9]{1,3}[\.]){3}[0-9]{1,3}'`
-     portal_port_temp=`echo $portal|grep -oE "port...[0-9]{1,5}"`
-     portal_port=`echo $portal_port_temp|grep -oE '[0-9]{1,5}'`
-	 if [ -z "$portal_ip" ]
-          then
-             portal_ip="119.147.41.210"
-	         portal_port=80
-	 fi
+
+if [ -z "$portal_ip" ]; then
+    sleep 30
+    portal=`$HTTP_REQ http://api.portal.swjsq.vip.xunlei.com:81/v2/queryportal`
+    portal_ip=`echo $portal|grep -oE '([0-9]{1,3}[\.]){3}[0-9]{1,3}'`
+    portal_port_temp=`echo $portal|grep -oE "port...[0-9]{1,5}"`
+    portal_port=`echo $portal_port_temp|grep -oE '[0-9]{1,5}'`
+    if [ -z "$portal_ip" ]; then
+        portal_ip="119.147.41.210"
+        portal_port=80
+    fi
 fi
 api_url="http://$portal_ip:$portal_port/v2"
-i=6
-while true
-do
-    if test $i -ge 6
-    then
-        ret=`$HTTP_REQ https://login.mobile.reg2t.sandai.net:443/ $POST_ARG"'''+_payload.replace('"','\\"')+'''" --header $UA_XL`
+i=100
+while true; do
+    if test $i -ge 100; then
+        echo "login xunlei"
+        ret=`$HTTP_REQ https://login.mobile.reg2t.sandai.net:443/ $POST_ARG"'''+_payload.replace('"','\\"')+'''" --header "$UA_XL"`
         session_temp=`echo $ret|grep -oE "sessionID...[A-F,0-9]{32}"`
-	 session=`echo $session_temp|grep -oE "[A-F,0-9]{32}"`
+        session=`echo $session_temp|grep -oE "[A-F,0-9]{32}"`
         uid_temp=`echo $ret|grep -oE "userID..[0-9]{9}"`
-	 uid=`echo $uid_temp|grep -oE "[0-9]{9}"`
-        i=0
-	  if [ -z "$session" ]
-        then
-              echo "session is empty"
-              i=6
-              sleep 30
-              uid=$uid_orig
-              continue
+        uid=`echo $uid_temp|grep -oE "[0-9]{9}"`
+        i=18
+        if [ -z "$session" ]; then
+            echo "session is empty"
+            i=100
+            sleep 60
+            uid=$uid_orig
+            continue
         else
-              echo "session is $session"
+            echo "session is $session"
         fi
 
-      if [ -z "$uid" ]
-        then
-	        echo "uid is empty"
-			uid=$uid_orig
-        else
-            echo "uid is $uid"
-        fi
-        $HTTP_REQ "$api_url/upgrade?peerid=$peerid&userid=$uid&user_type=1&sessionid=$session"
-
+      if [ -z "$uid" ]; then
+          #echo "uid is empty"
+          uid=$uid_orig
+      else
+          echo "uid is $uid"
+      fi
     fi
+
+    if test $i -eq 18; then
+      _ts=`date +%s`0000
+      $HTTP_REQ "$api_url/upgrade?peerid=$peerid&userid=$uid&sessionid=$session&user_type=1&client_type=android-swjsq-'''+APP_VERSION+'''&time_and=$_ts&client_version=androidswjsq-'''+APP_VERSION+'''&os=android-5.0.1.24SmallRice&dial_account='''+dial_account+'''"
+      i=0
+    fi
+
     sleep 1
 	day_of_month_orig=`date +%d`
     day_of_month=`echo $day_of_month_orig|grep -oE "[1-9]{1,2}"`
-    if [[ -z $orig_day_of_month || $day_of_month -ne $orig_day_of_month ]]
-     then
+    if [[ -z $orig_day_of_month || $day_of_month -ne $orig_day_of_month ]]; then
        orig_day_of_month=$day_of_month
-       $HTTP_REQ "$api_url/recover?peerid=$peerid&userid=$uid&user_type=1&sessionid=$session"
+       _ts=`date +%s`0000
+       $HTTP_REQ "$api_url/recover?peerid=$peerid&userid=$uid&sessionid=$session&client_type=android-swjsq-'''+APP_VERSION+'''&time_and=$_ts&client_version=androidswjsq-'''+APP_VERSION+'''&os=android-5.0.1.24SmallRice&dial_account='''+dial_account+'''"
        sleep 5
-	fi
-    ret=`$HTTP_REQ "$api_url/keepalive?peerid=$peerid&userid=$uid&user_type=1&sessionid=$session"`
-    if [ ! -z "`echo $ret|grep "not exist channel"`" ]
-    then
-        i=6
+       i=100
+       continue
+    fi
+
+    ret=`$HTTP_REQ https://login.mobile.reg2t.sandai.net:443/ $POST_ARG"{\\"protocolVersion\\":'''+str(PROTOCOL_VERSION)+''',\\"sequenceNo\\":1000000,\\"platformVersion\\":1,\\"peerID\\":\\"$peerid\\",\\"businessType\\":68,\\"clientVersion\\":\\"'''+APP_VERSION+'''\\",\\"isCompressed\\":0,\\"cmdID\\":11,\\"userID\\":$uid,\\"sessionID\\":\\"$session\\"}" --header "$UA_XL"`
+    error_code=`echo $ret|grep -oE "errorCode..[0-9]+"|grep -oE "[0-9]+"`
+    if [[ -z $error_code || $error_code -ne 0 ]]; then
+        i=100
+        continue
+    fi
+
+    _ts=`date +%s`0000
+    ret=`$HTTP_REQ "$api_url/keepalive?peerid=$peerid&userid=$uid&sessionid=$session&client_type=android-swjsq-'''+APP_VERSION+'''&time_and=$_ts&client_version=androidswjsq-'''+APP_VERSION+'''&os=android-5.0.1.24SmallRice&dial_account='''+dial_account+'''"`
+    if [ ! -z "`echo $ret|grep "not exist channel"`" ]; then
+        i=100
     else
         let i=i+1
-        sleep 270
+        sleep 590
     fi
 done
+'''.replace("\r", "")
+        if PY3K:
+            _ = _.encode("utf-8")
+        f.write(_)
 
-
-'''.replace("\r", ""))
 
 def update_ipk():
     def _sio(s = None):
@@ -410,13 +490,12 @@ def update_ipk():
         fobj.seek(pos)
         return _
 
-    def add_to_tar(tar, name, sio_obj, mode = 33279):
+    def add_to_tar(tar, name, sio_obj, perm = 420):
         info = tarfile.TarInfo(name = name)
         info.size = flen(sio_obj)
-        info.mode = mode
+        info.mode = perm
         sio_obj.seek(0)
         tar.addfile(info, sio_obj)
-
 
     if os.path.exists(ipk_file):
         os.remove(ipk_file)
@@ -424,12 +503,30 @@ def update_ipk():
 
     data_stream = sio()
     data_fobj = tarfile.open(fileobj = data_stream, mode = 'w:gz')
+    # /usr/bin/swjsq
     data_content = open(shell_file, 'rb')
-    add_to_tar(data_fobj, './bin/swjsq', data_content)
+    add_to_tar(data_fobj, './bin/swjsq', data_content, perm = 511)
+    # /etc/init.d/swjsq
+    data_content = _sio('''#!/bin/sh /etc/rc.common
+START=90
+STOP=15
+USE_PROCD=1
+
+start_service()
+{
+	procd_open_instance
+	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+	procd_set_param command /bin/swjsq
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+''')
+    add_to_tar(data_fobj, './etc/init.d/swjsq', data_content, perm = 511)
+    # wrap up
     data_fobj.close()
     add_to_tar(ipk_fobj, './data.tar.gz', data_stream)
     data_stream.close()
-
 
     control_stream = sio()
     control_fobj = tarfile.open(fileobj = control_stream, mode = 'w:gz')
